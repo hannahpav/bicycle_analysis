@@ -1,0 +1,486 @@
+---
+title: "BikeLM Lecture"
+author: "NS"
+date: "2023-03-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+rm(list = ls())
+set.seed(33)
+```
+
+## Overview
+
+**Objective:**
+
+Create a linear model to estimate the demand for bikes and test its accuracy. 
+Create transformations on the linear model and test their accuracy.
+
+**Response Variables:**
+
+*Y*: Hourly count rentals of bikes
+
+**Qualitative Predicting Variables:**
+
+*X1* = Day of the week
+*X2* = Month of the year
+*X3* = Hour of the day (ranging 0-23)
+*X4* = Year (2011, 2012)
+*X5* = Holiday Indicator
+*X6* = Weather condition (with four levels from good weather for level 1 to severe condition for level 4)
+
+**Quantitative Predicting Variables:**
+
+*X7* = Normalized temperature
+*X8* = Normalized humidity
+*X9* = Wind speed
+
+### Load Data
+
+```{r load data}
+data <- read.csv("Bikes.csv", header=T)
+head(data)
+```
+
+## Preparing the Data
+
+### As.Factor for Categorical
+
+```{r preparing data}
+# Set a seed for reproducibility
+set.seed(9)
+
+# Remove the irrelevant columns
+clean_data = data[-c(1,2,9,15,16)]
+
+# Convert the numerical categorical variables to predictors
+clean_data$season = as.factor(clean_data$season)
+clean_data$yr = as.factor(clean_data$yr)
+clean_data$mnth = as.factor(clean_data$mnth)
+clean_data$hr = as.factor(clean_data$hr)
+clean_data$holiday = as.factor(clean_data$holiday)
+clean_data$weekday = as.factor(clean_data$weekday)
+clean_data$weathersit = as.factor(clean_data$weathersit)
+```
+
+## Regression Model
+
+We fit a linear regression model with all the data
+```{r regression model}
+model1 = lm(cnt~., data=clean_data)
+summary(model1)
+```
+
+### Find insignificant values
+
+We want to identify p-values larger than sig level 0.05.
+```{r insignificant values}
+# Find insignificant values
+which(summary(model1)$coeff[,4]>0.05)
+```
+## GOF Residual Analysis
+```{r Constant Variance}
+resids = rstandard(model1)
+fits = model1$fitted
+plot(fits, resids, xlab="Fitted Values", ylab="Residuals", main="Scatterplot", col="darkblue")
+```
+Does not hold. Seems to be constant then flares. Need some controlling
+```{r Linearity Assumption}
+par(mfrow = c(2,2))
+plot(data$temp, resids, xlab = "Temperature", ylab = "Residuals")
+abline(h = 0)
+plot(data$atemp, resids, xlab = "Feeling Temperature", ylab = "Residuals")
+abline(h = 0)
+plot(data$hum, resids, xlab = "Humidity", ylab = "Residuals")
+abline(h = 0)
+plot(data$windspeed, resids, xlab = "Windspeed", ylab = "Residuals")
+abline(h = 0)
+```
+All residuals are ok, no transformation needed
+```{r Normality}
+par(mfrow = c(1,2))
+hist(resids, nclass=20, col="darkblue", border="gold", main="Histogram of residuals")
+
+qqnorm(resids,col="darkblue")
+qqline(resids, col="red")
+```
+
+### Goodness of Fit: outliers
+
+```{r cooks dist and outliers}
+# Cook’s Distance
+cook = cooks.distance(model1)
+plot(cook, type="h", lwd=3, col="darkred", ylab = "Cook's Distance", main="Cook's Distance")
+```
+
+It looks like theres an outlier, but it is so small at less than 0.004, so we don't use it
+
+## Transformation of Response Variable with BoxCox
+Assumption of constant variance doesn't hold, so we need to stabiliize the respones variable
+We are going to use the Box-Cox
+```{r BoxCox}
+## Box Cox transformation
+bc <- boxCox(model1)
+lambda <- bc$x[which(bc$y==max(bc$y))]
+lambda
+```
+Our lambda is 0.22, so we use 0.5 since it is count dat per unit time.
+
+## Model with Transformation
+
+```{r transformation}
+## Fitting the model with square root transformation
+model2<-lm(sqrt(cnt)~.,data=clean_data)
+summary(model2)
+```
+The R^2 increased from without this trasformation
+
+## Multicollinearity VIF
+we look for multicollinearity. We look for max(10, 1/(1-R2)). If it's over, it's a problem
+
+```{r multicollinearity VIF}
+vif(model2)
+
+```
+
+There is a problem with season, month, temp, and atemp. This means we should not use all of the predictors in teh model.
+
+## Removing Low Demand
+We said before hours 0-6 has low demand so could disrupt the model
+
+```{r remove low demand}
+# Set a seed for reproducibility
+set.seed(9)
+
+# Remove data for hours 0-6
+hrs = as.numeric(data$hr) #change hours to NUMERIC so we can do the greater than
+data_red = clean_data[which(hrs>=7),] #only chose hours over 7
+
+# Fitting the model with square root transformation
+model3 = lm(sqrt(cnt)~.,data=data_red)
+summary(model3)$r.squared
+
+which(summary(model3)$coeff[,4]>0.05)
+```
+The R-squared is less, so maybe not so much better
+
+The implication of the constant variation assumption violation is that the uncertainty in predicting bike demand when in high demand will be higher than estimated using the multiple regression model
+
+## Prediction
+
+### split to testing and training
+```{r prediction training testing}
+set.seed(9)
+
+# Random Sampling Approach: 80% Train 20% Test split
+sample_size = floor(0.8*nrow(clean_data))
+picked = sample(seq_len(nrow(clean_data)), size=sample_size)
+train = clean_data[picked,]
+test = clean_data[-picked,]
+
+sample_size_red = floor(0.8*nrow(data_red))
+picked_red = sample(seq_len(nrow(data_red)), size=sample_size_red)
+train_red = data_red[picked_red,]
+test_red = data_red[-picked_red,]
+
+##Apply the three models to training data
+model1 =  lm(cnt ~ ., data=train)  #regular
+model2 = lm(sqrt(cnt) ~ ., data=train) #transformed response
+model3 = lm(sqrt(cnt) ~ ., data= train_red) #reduced predictors
+
+# Build a prediction of the models with the new test data
+# Specify whether a confidence or prediction interval
+pred1 = predict(model1, test, interval = 'prediction')
+pred2 = predict(model2, test, interval = 'prediction')
+pred3 = predict(model3, test_red, interval = 'prediction')
+
+head(pred1, 12)
+```
+
+The prediction has larg intervals, so maybe not so great.
+
+##Prediction Accuracy with MSPE MAE etc
+
+```{r accuracy}
+## Save Predictions to compare with observed data
+test.pred1 = pred1[,1]
+test.lwr1 = pred1[,2]
+test.upr1 = pred1[,3]
+
+## Prediction measure functions
+# Mean Squared Prediction Error (MSPE)
+mse_fun <- function(pred,dat){mean((pred-dat)^2)}
+mse_fun(test.pred1,test$cnt)
+
+# Mean Absolute Prediction Error (MAE)
+mae_fun <- function(pred,dat){mean(abs(pred-dat))}
+mae_fun(test.pred1,test$cnt)
+
+# Mean Absolute Percentage Error (MAPE)
+mape_fun <- function(pred,dat){mean(abs(pred-dat)/abs(dat))}
+mape_fun(test.pred1,test$cnt)
+
+# Precision Measure (PM)
+pm_fun <- function(pred,dat){sum((pred-dat)^2)/sum((dat-mean(dat))^2) }
+pm_fun(test.pred1,test$cnt)
+       
+# CI Measure (CIM)
+ci_fun <- function(pred.lwr,pred.upr,dat){
+  sum(dat<pred.lwr|dat>pred.upr)/length(dat) 
+}
+ci_fun(test.lwr1,test.upr1, test$cnt)
+```
+
+MSE depends on magnitude of data, so its' meaningless here. Same with MAE.
+MAP is 2.72, which is large, because avg diffrence between forecases value and actual is 272%
+Precision is 0.31, meaning variable in the prediction is 31% variableity in new response. This is good since smaller than one.
+CIM, we find that approximately 6% of the new response data is outside of the 95% prediction intervals.
+
+
+## Prediction Accuracy: Averaging (Model 1)
+
+This is a function
+```{r prediction function}
+## Prediction Function
+pred_fun <- function(model,test,transf=FALSE){
+ pred = predict(model, test, interval = 'prediction')
+ test.pred = pred[,1]
+ test.lwr = pred[,2]
+ test.upr = pred[,3]
+ if(transf==FALSE){
+   mse_model = mse_fun(test.pred,test$cnt) 
+   mae_model =  mae_fun(test.pred,test$cnt)
+   mape_model = mape_fun(test.pred,test$cnt) 
+   pm_model  = pm_fun(test.pred,test$cnt) 
+   ci_model =  ci_fun(test.lwr,test.upr,test$cnt)
+   predict_meas = c(mse_model,mae_model,mape_model,pm_model,ci_model)
+ }
+ else{
+   mse_model = mse_fun(test.pred^2,test$cnt) 
+   mae_model =  mae_fun(test.pred^2,test$cnt)
+   mape_model = mape_fun(test.pred^2,test$cnt) 
+   pm_model  = pm_fun(test.pred^2,test$cnt) 
+   ci_model =  ci_fun(test.lwr^2,test.upr^2,test$cnt)
+   predict_meas = c(mse_model,mae_model,mape_model,pm_model,ci_model)
+ }
+ return(predict_meas)
+}
+```
+
+
+```{r sampling for 100 times}
+## Apply Sampling & Predictions 100 times then average
+pred1_meas = matrix(0,5,100)
+pred2_meas = matrix(0,5,100)
+pred3_meas = matrix(0,5,100)
+
+## Apply Random Sampling 100 times
+for(i in 1:100){
+# Random Sampling Approach: 80% Training Data & 20% Testing Data
+  sample_size = floor(0.8*nrow(clean_data))
+  picked = sample(seq_len(nrow(clean_data)), size=sample_size)
+  train = clean_data[picked,]
+  test = clean_data[-picked,]
+  
+  sample_size_red = floor(0.8*nrow(data_red))
+  picked_red = sample(seq_len(nrow(data_red)), size=sample_size_red)
+  train_red = data_red[picked_red,]
+  test_red = data_red[-picked_red,]
+  
+  # Apply the two models to training data 
+  model1.train =  lm(cnt ~ ., data=train) 
+  model2.train = lm(sqrt(cnt) ~ ., data=train) 
+  model3.train = lm(sqrt(cnt) ~ ., data= train_red)
+  
+  ## Save Predictions for the i-th iteration
+  pred1_meas[,i] = pred_fun(model1.train,test)
+  pred2_meas[,i] = pred_fun(model2.train,test,TRUE)
+  pred3_meas[,i] = pred_fun(model3.train,test_red,TRUE)
+}
+
+## Average across 100 iterations
+model1_ave = round(apply(pred1_meas,1,mean),4)
+model2_ave = round(apply(pred2_meas,1,mean),4)
+model3_ave = round(apply(pred3_meas,1,mean),4)
+
+model1_ave
+```
+
+## Prediciton Accuracy, k-fold and random sampling
+
+
+## Average Prediction Accuracy: Comparing Data-Split Approaches 
+```{r}
+library(modelr)
+library(purrr)
+
+## Random Sampling: 20% Test Data for 100 iterations
+cvrandom = crossv_mc(clean_data, n=100, test = 0.2)
+cvrandom_red = crossv_mc(data_red, n=100, test = 0.2)
+
+## K-fold Cross-Validation with K=10
+cvkfold = crossv_kfold(clean_data, k=10)
+cvkfold_red = crossv_kfold(data_red, k=10)
+
+## Fit models for all combinations of k-1 folds 
+models1kfold <- map(cvkfold$train, ~lm(cnt ~ ., data = .))
+models2kfold <- map(cvkfold$train, ~lm(sqrt(cnt) ~ ., data = .))
+models3kfold <- map(cvkfold_red$train, ~lm(sqrt(cnt) ~ ., data = .))
+
+## Fit models for all random data splits
+models1random <- map(cvrandom$train, ~lm(cnt ~ ., data = .))
+models2random <- map(cvrandom$train, ~lm(sqrt(cnt) ~ ., data = .))
+models3random <- map(cvrandom_red$train, ~lm(sqrt(cnt) ~ ., data = .))
+
+## Obtain predictions across all models
+get_pred_meas  <- function(model,test_data,transf=FALSE){
+  data  <- as.data.frame(test_data)
+  test  <- add_predictions(data, model)
+  caret_model = mse_fun(test$pred,test$cnt) 
+  mae_model =  mae_fun(test$pred,test$cnt)
+  mape_model = mape_fun(test$pred,test$cnt) 
+  pm_model  = pm_fun(test$pred,test$cnt)
+  if(transf==TRUE){
+    mse_model = mse_fun(test$pred^2,test$cnt)
+    mae_model =  mae_fun(test$pred^2,test$cnt)
+    mape_model = mape_fun(test$pred^2,test$cnt) 
+    pm_model  = pm_fun(test$pred^2,test$cnt)
+  }
+  meas = c(mse_model,mae_model,mape_model,pm_model)
+  return(meas)
+}
+pred1kfold = NULL
+pred2kfold = NULL
+pred3kfold = NULL
+N = length(models1kfold)
+for(i in 1:N){
+  pred1kfold = cbind(pred1kfold,get_pred_meas(models1kfold[[i]],cvkfold$test[[i]]))
+  pred2kfold = cbind(pred2kfold,get_pred_meas(models2kfold[[i]],cvkfold$test[[i]],TRUE))
+  pred3kfold = cbind(pred3kfold,get_pred_meas(models3kfold[[i]],cvkfold_red$test[[i]],TRUE))
+}
+model1kfold_ave = round(apply(pred1kfold,1,mean),4)
+model2kfold_ave = round(apply(pred2kfold,1,mean),4)
+model3kfold_ave = round(apply(pred3kfold,1,mean),4)
+
+pred1random = NULL
+pred2random = NULL
+pred3random = NULL
+N = length(models1random)
+for(i in 1:N){
+  pred1random = cbind(pred1random,get_pred_meas(models1random[[i]],cvrandom$test[[i]]))
+  pred2random = cbind(pred2random,get_pred_meas(models2random[[i]],cvrandom$test[[i]],TRUE))
+  pred3random = cbind(pred3random,get_pred_meas(models3random[[i]],cvrandom_red$test[[i]],TRUE))
+}
+model1random_ave = round(apply(pred1random,1,mean),4)
+model2random_ave = round(apply(pred2random,1,mean),4)
+model3random_ave = round(apply(pred3random,1,mean),4)
+
+```
+
+
+
+```{r}
+model1kfold_ave
+model1random_ave
+```
+
+***
+## P-values and Large Sample Size
+
+### P-value Problem
+```{r p-value iteration}
+# Approach: Subsample 40% of the initial data sample & repeat 100 times
+count = 1
+n = nrow(clean_data)
+B = 100
+ncoef = dim(summary(model2)$coeff)[1]
+pv_matrix = matrix(0,nrow = ncoef,ncol = B)
+
+## Set percentage for the sub-sampled data
+perc = 0.4 # 40% random sample of indices
+while (count <= B) {
+  subsample  = sample(n, floor(n*perc), replace=FALSE)
+  # Extract the random subsample data
+  subdata = clean_data[subsample,]
+  # Fit the regression for each subsample
+  submod = lm(sqrt(cnt)~.,data=subdata)
+  # Save the p-values
+  pv_matrix[,count] = summary(submod)$coeff[,4]
+  # Increment to the next subsample
+  count = count + 1
+}
+
+# Count pvalues smaller or equal to than 0.01 across the 100 (sub)models
+alpha = 0.01
+pv_significant = rowSums(pv_matrix <= alpha)
+
+```
+
+
+### Statistically Significant Coefficients
+```{r extract significant}
+# Which regression coefficients are statistically significant?
+idx_scoef = which(pv_significant>=95)
+
+# Show the p-values of the significant coefficients in model2
+cbind(summary(model2)$coeff[idx_scoef,c(1,4)],
+      Freq=pv_significant[idx_scoef])
+
+# Plot the 100 p-values of the significant coefficients
+matplot(pv_matrix[idx_scoef,],
+     xlab="Regression Coefficient Index",
+     ylab="P-values across 100 Samples",
+     type="p",
+     pch="o",
+     col="blue")
+```
+
+
+### Coefficients Not Statsitically Significant
+```{r}
+## Which regression coefficients are not statistically significant?
+idx_icoef = which(pv_significant<=85)
+
+# Show the p-values of coefficients not stastically significant
+# in model2
+cbind(summary(model2)$coeff[idx_icoef,c(1,4)],
+      Freq=pv_significant[idx_icoef])
+
+# Plot the 100 p-values of the coefficients not statistically
+# significant
+matplot(pv_matrix[idx_icoef,],
+     xlab="Regression Coefficient Index",
+     ylab="P-values across 100 Samples",
+     type="p",
+     pch="o",
+     col="blue")
+```
+
+
+### Implications of the tunning parameter Percent Subsample
+```{r}
+count = 1
+perc = 0.2
+pv_matrix.2 = matrix(0,nrow = ncoef,ncol = B)
+while (count <= B) {
+  subsample  = sample(n, floor(n*perc), replace=FALSE)
+  # Extract the random subsample data
+  subdata = clean_data[subsample,]
+  # Fit the regression for each subsample
+  submod = lm(sqrt(cnt)~.,data=subdata)
+  # Save the p-values
+  pv_matrix.2[,count] = summary(submod)$coeff[,4]
+  # Increment to the next subsample
+  count = count + 1
+}
+pv_significant.2 = rowSums(pv_matrix.2 < alpha)
+idx_icoef.2 = which(pv_significant.2<85)
+cbind(round(summary(model2)$coeff[idx_icoef.2,c(1,4)],3),
+      Freq=pv_significant.2[idx_icoef.2])
+```
+
