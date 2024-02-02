@@ -1,0 +1,277 @@
+---
+title: "Rental Bikes"
+author: "NS"
+date: "2023-03-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load Packages
+
+```{r}
+
+library(tidyverse)
+library(readr)
+library(lubridate)
+library(dplyr)
+library(data.table)
+library(leaps)
+library(ggplot2)
+library(dplyr)
+library(MASS)
+library(corrplot)
+```
+
+## Overview
+
+**Objective:**
+Create a poisson model to estimate the demand for bikes and test its accuracy and for overdispersion.
+
+**Response Variables:**
+
+• *Y* (Cnt): Total bikes rented by both casual & registered users together
+
+**Qualitative Predicting Variables:**
+
+*Season*: Season which the observation is made (1 = Winter, 2 = Spring, 3 = Summer, 4 = Fall)
+*Yr*: Year on which the observation is made
+*Mnth*: Month on which the observation is made
+*Hr*: Day on which the observation is made (0 through 23)
+*Holiday*: Indictor of a public holiday or not (1 = public holiday, 0 = not a public holiday)
+*Weekday*: Day of week (0 through 6)
+*Weathersit*: Weather condition (1 = Clear, Few clouds, Partly cloudy, Partly cloudy, 2 = Mist & Cloudy, Mist & Broken clouds, Mist & Few clouds, Mist, 3 = Snow, Rain, Thunderstorm & Scattered clouds, Ice Pallets & Fog)
+
+**Quantitative Predicting Variables:**
+
+*Temp*: Normalized temperature in Celsius
+*Atemp*: Normalized feeling temperature in Celsius
+*Hum*: Normalized humidity
+*Windspeed*: Normalized wind speed
+
+### Load Data
+
+```{r load data}
+data <- read.csv("Bikes.csv", header=T)
+head(data)
+```
+## Preparing Data for Predicition
+
+We have both qualititative and quantitive predicting variables, which means we have to change the qualitative to factors.
+We are also removing the columns we don't need. This includes the record index, date, count of casual users, and count of registered users
+
+```{r prepare data, convert}
+
+# Remove irrelevant columns
+clean_data = data[-c(1,2,9,15,16)]
+# Convert the numerical categorical variables to predictors
+clean_data$season = as.factor(clean_data$season)
+clean_data$yr = as.factor(clean_data$yr)
+clean_data$mnth = as.factor(clean_data$mnth)
+clean_data$hr = as.factor(clean_data$hr)
+clean_data$holiday = as.factor(clean_data$holiday)
+clean_data$weekday = as.factor(clean_data$weekday)
+clean_data$weathersit = as.factor(clean_data$weathersit)
+
+```
+
+Next set to training nad testing
+```{r training and testing sets}
+# clean_data has categorical variables converted to factors , not necessary for doing separately on train and test
+sample_size = floor(0.8*nrow(clean_data))
+picked = sample(seq_len(nrow(clean_data)), size=sample_size)
+train = clean_data[picked,]
+test = clean_data[-picked,]
+```
+
+## Poisson Regression Analysis
+
+We do a poisson regression to the new clean set.
+We do poisson becasue the constant variance assumptin is violated when using MLR
+```{r Poisson}
+model1 = glm(cnt~., data=clean_data, family = "poisson")
+summary(model1)
+```
+
+There are a lot of variables here, which can lead to inflated statistical significance.
+
+## Poisson GOF
+```{r Poisson residual analysis}
+resids1 <- resid(model1, type='deviance')
+hist(resids1, nclass=20, col="blue", border="gold" , main = "histogram of residuals")
+qqnorm(resids1, col="blue")
+qqline(resids1, col = 'red')
+
+```
+The normality assumption looks ok from the histogram, but the qqnorm seems to be heavy-tailed.
+
+```{r GOF residuals}
+with(model1, cbind(res.deviance = deviance, df = df.residual, p = pchisq(deviance, df.residual, lower.tail=FALSE)))
+```
+
+## Prediction Accuracy Measures
+
+This is simliar to what we used for MLR in teh previous module. We use the same set of functions, and all together aggregated.
+
+```{r Prediction Accuracy Measures and Aggregated}
+# Mean Squared Prediction Error (MSPE)
+mse_fun <- function(pred,dat){mean((pred-dat)^2)}
+# Mean Absolute Prediction Error (MAE)
+mae_fun <- function(pred,dat){mean(abs(pred-dat))}
+# Mean Absolute Percentage Error (MAPE)
+mape_fun <- function(pred,dat){mean(abs(pred-dat)/abs(dat))}
+# Precision Measure (PM)
+pm_fun <- function(pred,dat){sum((pred-dat)^2)/sum((dat-mean(dat))^2)}
+## Aggregate Prediction Function
+pred_fun <- function(model,test){ 
+  pred = predict(model, test, type="response") 
+  test.pred = pred 
+  mse_model = mse_fun(test.pred,test$cnt)
+  mae_model = mae_fun(test.pred,test$cnt)
+  mape_model = mape_fun(test.pred,test$cnt)
+  pm_model = pm_fun(test.pred,test$cnt)
+  pred_meas = c(mse_model,mae_model, mape_model, pm_model)
+  return(pred_meas)
+}
+```
+
+## prediction accuracy: Poisson with Test/Train
+
+We can measure the accuracy once or 100 times. 
+
+```{r Accuracy measure for Poisson 1x}
+## Accuracy measures for 1 iteration (Poisson Regression)
+set.seed(0)
+sample_size = floor(0.8*nrow(clean_data))
+picked = sample(seq_len(nrow(clean_data)), size=sample_size)
+train = clean_data[picked,];
+test = clean_data[-picked,]
+model1.train = glm(cnt~.,data=train,family="poisson")
+pred_fun(model1.train,test)
+
+```
+These four are MSPE, MAE, MAPE, and PM. PM is t0.245, meaning about 25% of model is explained.
+
+
+```{r Accuracy measure for Poisson 100x}
+## Accuracy measures for 100 iteration (Poisson Regression)
+set.seed(0)
+pred1_meas = matrix(0,4,100)
+for(i in 1:100){
+  sample_size = floor(0.8*nrow(clean_data))
+  picked = sample(seq_len(nrow(clean_data)), size=sample_size)
+  train = clean_data[picked,]; test = clean_data[-picked,]
+  model1.train = glm(cnt~.,data=train,family="poisson")
+  pred1_meas[,i] = pred_fun(model1.train,test)
+}
+model1_ave = round(apply(pred1_meas,1,mean),4)
+model1_ave
+
+```
+
+For 100x, it doesn't seem to be all that much better
+
+## P-value and inflated significance, subsampling
+
+instead of all data, we do 20% with 100 repetitions and apply the poisson regression
+**Tunning Parameter**: percent sub-sample
+
+```{r tunning parameter, sub-sample}
+## Approach: Subsample 20% of the initial data sample & repeat 100 times
+count = 1
+n = nrow(clean_data)
+B = 100 #repetitions
+ncoef = dim(summary(model1)$coeff)[1] #no of coefficients
+pv_matrix = matrix(0,nrow = ncoef,ncol = B)
+while (count <= B){
+  subsample = sample(n, floor(n*0.2), replace=FALSE) #sample 20%
+  subdata = clean_data[subsample,] #sample that from original set
+  # Fit the poisson regression for each subsample
+  submod = glm(cnt~.,data=subdata,family="poisson")
+  ## Count pvalues smaller than 0.01 across the 100 (sub)models
+  pv_matrix[,count] = summary(submod)$coeff[,4]
+  count = count + 1
+}
+alpha = 0.01
+pv_significant = rowSums(pv_matrix < alpha)
+```
+
+## Identifying Statistical Significance
+The above gave us 100 values and we are testing them against a sig level of95% larger than sig level.
+
+```{r find reg coeff that are significant}
+# Identify variables which have p-values less<alpha on more than 95% iterations
+idx_scoef = which(pv_significant>=95)
+length(idx_scoef)
+```
+This means 44/51 p-values are small across the sub-samples
+
+We can also plot this
+```{r sub-sampling plot}
+matplot(pv_matrix[idx_scoef,],
+        xlab="Regression Coefficient Index",
+        ylab="P-values across 100 Samples",
+        type="p",
+        pch="o",
+        col="blue")
+
+```
+
+## Lack Statistical Significance
+
+We want to ind which coeficients are not statistically signficant, which would mean a pv less than 85
+```{r lack stat sig}
+idx_icoef = which(pv_significant<85)
+# Show the p-values of the non-significant coefficients in model2
+cbind(summary(model1)$coeff[idx_icoef,c(1,4)],
+      Freq=pv_significant[idx_icoef])
+# Plot the 100 p-values of the non-significant coefficients
+matplot(pv_matrix[idx_icoef,],
+        xlab="Regression Coefficient Index",
+        ylab="P-values across 100 Samples",
+        type="p",
+        pch="o",
+        col="blue")
+```
+We can see from the table which values were not sinificant because 80 of p-values smalle rthan significance
+the distribution of p-values is approx uniform
+
+## Overdispersion
+
+Like the other models we can have overdispersion. We can find this by plotting the log of fitted values against log of squared differences.
+With Overdispersion, we can try to correct with quasi poisson or negative binomial.
+
+```{r overdispersion plot}
+# Overdispersion (a probable cause of inflated significance)
+plot(log(fitted(model1)),log((data$cnt-fitted(model1))^2),xlab=expression(hat(mu)),ylab=expression((y-hat(mu))^2),pch=20,col="blue")
+abline(0,1) ## 'variance = mean' line
+
+```
+
+We can see that the overdispersion occurs above the line here, which means that most observations, variance is higher than the mean.
+
+### Overdispersion parameter
+```{r overdispersion parameter}
+#overdispersion parameter
+
+dp = sum(residuals(model1,type ="pearson")^2)/model1$df.residual
+dp
+```
+
+It's above 32, which is WAY more than the threshold of 2 or 4.
+
+
+```{r}
+# see how the coefficients are affected owing to overdispersion
+cbind(original_estimates=summary(model1)$coeff[,4],dispersion_estimates=summary(model1,dispersion=dp)$coeff[,4])
+```
+
+
+```{r}
+# effect of overdispersion on model coefficients 
+
+length(which(summary(model1,dispersion=dp)$coeff[,3]<0.025))
+length(which(summary(model1)$coeff[,3]<0.025))
+```

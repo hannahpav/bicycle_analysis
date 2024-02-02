@@ -14,6 +14,19 @@ rm(list = ls())
 set.seed(33)
 ```
 
+```{r load packages}
+library(tidyverse)
+library(readr)
+library(lubridate)
+library(dplyr)
+library(data.table)
+library(leaps)
+library(ggplot2)
+library(dplyr)
+library(MASS)
+library(corrplot)
+```
+
 ## Overview
 
 **Objective:**
