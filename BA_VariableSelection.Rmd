@@ -1,0 +1,243 @@
+---
+title: "Bike Analysis Variable Selection"
+date: "2023-11-11"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Overview
+
+**Objective:**
+Perform variable selection on 
+
+**The response variable is:**\
+$Y$ (Cnt): Total bikes rented by both casual & registered users together
+
+**The predicting variables are:**\
+$X_1$ (Instant): Record index\
+$X_2$ (Dteday): Day on which the observation is made\
+$X_3$ (Season): Season which the observation is made (1 = Winter, 2 =
+Spring, 3 = Summer, 4 = Fall)\
+$X_4$ (Yr): Year on which the observation is made\
+$X_5$ (Mnth): Month on which the observation is made\
+$X_6$ (Hr): Day on which the observation is made (0 through 23)\
+$X_7$ (Holiday): Indictor of a public holiday or not (1 = public
+holiday, 0 = not a public holiday)\
+$X_8$ (Weekday): Day of week (0 through 6)\
+$X_9$ (Working day): Indicator of a working day (1 = working day, 0 =
+not a working day)\
+$X_{10}$ (Weathersit): Weather condition (1 = Clear, Few clouds, Partly
+cloudy, Partly cloudy, 2 = Mist & Cloudy, Mist & Broken clouds, Mist &
+Few clouds, Mist, 3 = Light Snow, Light Rain, Thunderstorm & Scattered
+clouds, Light Rain & Scattered clouds, 4 = Heavy Rain, Ice Pallets,
+Thunderstorm & Mist, Snow & Fog)\
+$X_{11}$ (Temp): Normalized temperature in Celsius\
+$X_{12}$ (Atemp): Normalized feeling temperature in Celsius\
+$X_{13}$ (Hum): Normalized humidity\
+$X_{14}$ (Windspeed): Normalized wind speed\
+$X_{15}$ (Casual): Bikes rented by casual users in that hour\
+$X_{16}$ (Registered): Bikes rented by registered users in that hour
+
+```{r}
+# Bike Sharing DC
+# We have analyzed in Model 2 with Mult Regr Model and Model 3 with Poission, w/ Poisson showing better performance
+gtblue = rgb(0, 48, 87, maxColorValue = 255)
+techgold = rgb(179, 163, 105, maxColorValue = 255)
+buzzgold = rgb(234, 170, 0, maxColorValue = 255)
+bobbyjones = rgb(55, 113, 23, maxColorValue = 255)
+# Read the data using read.csv or Import Manually
+data = read.csv("Bikes.csv")
+# Show the number of observations
+
+obs = nrow(data)
+cat("There are", obs, "observations in the data")
+```
+
+```{r}
+## Preparing the data
+
+# Set a seed for reproducibility
+set.seed(9)
+
+# Remove the irrelevant columns
+clean_data = data[-c(1,2,9,15,16)]
+
+# Convert the numerical categorical variables to predictors
+clean_data$season = as.factor(clean_data$season)
+clean_data$yr = as.factor(clean_data$yr)
+clean_data$mnth = as.factor(clean_data$mnth)
+clean_data$hr = as.factor(clean_data$hr)
+clean_data$holiday = as.factor(clean_data$holiday)
+clean_data$weekday = as.factor(clean_data$weekday)
+clean_data$weathersit = as.factor(clean_data$weathersit)
+
+
+
+model_bikes = glm(cnt~., data=clean_data, family = "poisson")
+summary(model_bikes)
+
+# ALL predicting variables are statistically significant...LOL WOW!
+# We should perform variable selection
+# When we analyzed this example, we saw the implications of applying regression to a large sample size of data and we see inflated statistical significance
+# When we use subsampling approach, some pred vars were identified as not statistically significant
+```
+
+```{r}
+# Now we do a second model which will be reduced (exclude temp)
+model_bikes2 = glm(cnt~-temp, data = clean_data, family = "poisson")
+
+n = nrow(clean_data)
+
+# Full model
+c(AIC(model_bikes), AIC(model_bikes, k = log(n)))
+
+# Reduced model without temp & compare values
+c(AIC(model_bikes2), AIC(model_bikes2, k=log(n)))
+
+# only use likelihood based criteria for logs so only AIC and BIC!
+
+# Based on these two criteria, Full model is better than Reduced b/c values are smaller
+```
+
+```{r}
+# Now stepwise forward regression
+null_model = glm(formula = cnt ~ 1, data = clean_data, family = "poisson") # Null model with no variables
+full_model = glm(formula = cnt ~ ., data = clean_data, family = "poisson") 
+n = nrow(clean_data)
+
+# With AIC
+AIC <- step(null_model, scope = list(lower=null_model, upper = full_model), direction = "forward")
+```
+
+```{r}
+# With BIC
+BIC <- step(null_model, scope=list(lower=null_model, upper = full_model), direction = "forward", k=log(n))
+# only difference between AIC is the log(n) addition
+
+# Predictors selected are same for AIC and BIC
+# BIC output still shows AIC rather than BIC
+
+# if we did backwards stepwise, we would select all predictors using both AIC or BIC
+```
+
+```{r}
+BIC_back <- step(full_model, scope=list(lower=null_model, upper = full_model), direction = "backward", k=log(n))
+# This is the output from the lecture notes too! All predictors selected
+```
+
+## Moving on to LASSO Regression
+
+```{r}
+library(glmnet)
+x_pred = cbind(data$season, data$yr, data$mnth, data$hr, data$holiday, data$weekday, data$weathersit, data$temp, data$atemp, data$hum, data$windspeed)
+
+# 10fold CV to find optimal lambda
+bike_model.cv = cv.glmnet(x_pred, data$cnt, family = c("poisson"), alpha = 1, nfolds = 10)
+
+# fit lasso model with 100 values for lambda:
+bike_model = glmnet(x_pred, data$cnt, family = c("poisson"), alpha = 1, nlambda = 100)
+
+# Extract coefficients at the optimal lambda:
+coef(bike_model, s=bike_model.cv$lambda.min)
+
+# can see what these variables align with. V1 = season, V2 = year, V3 = month, V4 = HR
+```
+
+```{r}
+# plot the lasso coef  path
+plot(bike_model, xvar = "lambda", label = TRUE, lwd = 2)
+abline(v=log(bike_model.cv$lambda.min),col='red',lty = 2,lwd=2)
+
+# if we compared to Elastic net, we'd see a similar output for coef path but elastic net would be smoother
+# some coef paths for Elastic net are closer to the 0 line, indicating lower contribution to explanatory power
+```
+
+```{r message=FALSE, warning=FALSE}
+# GROUP LASSO:
+library(grpreg)
+library(scales)
+library(caret)
+# we have multiple qualitative and multiple dummy variables
+# month of the year adds 11 dummy variables to the model
+num_var <- cbind(data$temp, data$atemp, data$hum, data$windspeed)
+num_var_scale <- sapply(num_var, rescale)
+dv <- dummyVars("~ season + yr + mnth + hr + holiday + weekday + weathersit", data = data)
+
+num_var_scale_matrix <- matrix(num_var_scale, nrow = nrow(num_var), byrow = FALSE)
+
+# Create the dummy variables dataframe
+x_dummy <- predict(dv, newdata = data)
+
+x_pred_scale <- cbind(x_dummy, as.matrix(num_var_scale_matrix))
+
+# set up the groups of variables here:
+group = c(1,1,1,2,3,3,3,3,3,3,3,3,3,3,3,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,5,6,6,6,6,6,6,7,7,8,9,10,11)
+# 6 groups for each qualitative variable and 4 variables that are not part of a group (corresponding to the quantitative variables)
+```
+
+```{r,warning=FALSE}
+# group lasso CV command to find optimal lambda and implement group lambda for the optimal lambda, then get the coeffs
+
+# 10 fold CV to get optimal lambda:
+
+group = 1:ncol(x_pred_scale)  # Assign each predictor its own group
+grouplasso.cv = cv.grpreg(x_pred_scale, data$cnt, group = group, family = "poisson", nfolds = 10)
+
+# fit model for 100 values for lambda:
+grouplasso = grpreg(x_pred_scale, data$cnt, group = group, penalty = "grLasso", family = "poisson")
+
+# Get the minimum lambda value from cross-validation
+min_lambda <- grouplasso.cv$lambda.min
+
+# Extract coefficients at the optimal lambda
+coefficients_at_min_lambda <- coef(grouplasso, s = min_lambda)
+
+# Display the coefficients
+#coefficients_at_min_lambda
+```
+
+```{r}
+# path of coeffs from Lasso regression:
+plot(grouplasso, lwd=2)
+abline(v=grouplasso.cv$lambda.min, col = 'black', lty = 2, lwd =2)
+# coef paths are plotted from largest to the smallest lambda
+# most of the regr coeffs get selected for large lambda values
+```
+
+```{r}
+library(dplyr)
+
+cnt <- data$cnt
+n = length(cnt)
+x_pred = cbind(data$season, data$yr, data$mnth, data$hr, data$holiday, data$weekday, data$weathersit, data$temp, data$atemp, data$hum, data$windspeed)
+colnames(x_pred) <- c("season", "yr", "mnth", "hr", "holiday", "weekday", "weathersit", "temp", "atemp", "hum", "windspeed")
+
+# Sample 50% of the dataset:
+perc = 0.5
+var_count <- data.frame("var" = colnames(x_pred), "count" = 0) # initial count
+
+for (i in 1:100) {
+  subsample = sample(n, floor(n * perc), replace = FALSE)
+  sub_x = x_pred[subsample, ]
+  sub_cnt = cnt[subsample]
+  # Find optimal lambda using 5-fold CV
+  sub_model.cv = cv.glmnet(sub_x, sub_cnt, family = "poisson", alpha = 1, nfolds = 5)
+  # Fit lasso model with 100 values for lambda
+  sub_model = glmnet(sub_x, sub_cnt, family = "poisson", alpha = 1, nlambda = 100)
+  # Extract coefficients at optimal lambda
+  var_temp = as.matrix(coef(sub_model, s = sub_model.cv$lambda.min))
+  
+  # Remove the intercept and convert to a data frame
+  var_temp_df = as.data.frame(var_temp[-1, , drop = FALSE])
+  
+  # Increment 'count' for non-zero coefficients
+  var_count$count = var_count$count + (var_temp_df != 0)
+}
+
+```
